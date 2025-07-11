@@ -314,12 +314,14 @@ public class EntityKineticBullet extends Projectile implements IEntityAdditional
                 }
                 for (EntityResult entityResult : hitEntityResult) {
                     result = new TacHitResult(entityResult);
-                    this.onHitEntity((TacHitResult) result, startVec, endVec);
-                    this.pierce--;
-                    if (this.pierce < 1 || this.explosion) {
-                        // 子弹已经穿透所有实体，结束子弹的飞行
-                        this.discard();
-                        return;
+
+                    if (this.onHitEntity((TacHitResult) result, startVec, endVec)) {
+                        this.pierce--;
+                        if (this.pierce < 1 || this.explosion) {
+                            // 子弹已经穿透所有实体，结束子弹的飞行
+                            this.discard();
+                            return;
+                        }
                     }
                 }
             }
@@ -361,30 +363,47 @@ public class EntityKineticBullet extends Projectile implements IEntityAdditional
         }
     }
 
-    protected void onHitEntity(TacHitResult result, Vec3 startVec, Vec3 endVec) {
+    /**
+     * Handles the logic for when a bullet hits an entity.
+     * Returns true if the hit should consume a pierce (i.e., the event was not canceled and damage was applied).
+     * Returns false if the hit should not consume a pierce (e.g., canceled event, special target entity, or entity is null).
+     *
+     * 处理子弹击中实体的逻辑。
+     * 当需要消耗穿透次数（例如事件未被取消且造成了伤害）时返回 true。
+     * 当不需要消耗穿透次数（例如事件被取消、特殊目标实体或实体为 null）时返回 false。
+     */
+    protected boolean onHitEntity(TacHitResult result, Vec3 startVec, Vec3 endVec) {
         if (result.getEntity() instanceof ITargetEntity targetEntity) {
             DamageSource source = this.damageSources().thrown(this, this.getOwner());
             targetEntity.onProjectileHit(this, result, source, this.getDamage(result.getLocation()));
+            // Target entity logic does not consume pierce
             // 打靶直接返回
-            return;
+            return true;
         }
+        // Gather necessary information for the Pre event
         // 获取Pre事件必要的信息
         Entity entity = result.getEntity();
         @Nullable Entity owner = this.getOwner();
+        // Attacker
         // 攻击者
         LivingEntity attacker = owner instanceof LivingEntity ? (LivingEntity) owner : null;
         var sources = createDamageSources(MaybeMultipartEntity.of(entity));
         boolean headshot = result.isHeadshot();
         float damage = this.getDamage(result.getLocation());
         float headShotMultiplier = Math.max(this.headShot, 0);
+
+        // Fire Pre event
         // 发布Pre事件
         var preEvent = new EntityHurtByGunEvent.Pre(this, entity, attacker, this.gunId, this.gunDisplayId, damage, sources, headshot, headShotMultiplier, LogicalSide.SERVER);
-        var cancelled = MinecraftForge.EVENT_BUS.post(preEvent);
+        boolean cancelled = MinecraftForge.EVENT_BUS.post(preEvent);
         if (cancelled) {
-            return;
+            return false;
         }
+
+        // Refresh parameters after Pre event modifications
         // 刷新由Pre事件修改后的参数
         entity = preEvent.getHurtEntity();
+        // Target entity after modifications
         // 受击目标
         var parts = MaybeMultipartEntity.of(entity);
         attacker = preEvent.getAttacker();
@@ -394,45 +413,64 @@ public class EntityKineticBullet extends Projectile implements IEntityAdditional
         headshot = preEvent.isHeadShot();
         headShotMultiplier = preEvent.getHeadshotMultiplier();
         if (entity == null) {
-            return;
+            return false;
         }
+
+        // Ignite entity if enabled
         // 点燃
         if (this.igniteEntity && AmmoConfig.IGNITE_ENTITY.get()) {
             entity.setSecondsOnFire(this.igniteEntityTime);
+            // Display particle effect
             // 给予粒子效果
             if (this.level() instanceof ServerLevel serverLevel) {
                 serverLevel.sendParticles(ParticleTypes.LAVA, entity.getX(), entity.getY() + entity.getEyeHeight(), entity.getZ(), 1, 0, 0, 0, 0);
             }
         }
+
+        // Headshot logic
         // TODO 暴击判定（不是爆头）暴击判定内部逻辑，需要输出一个是否暴击的 flag
         if (headshot) {
+            // Default headshot damage is 1x
             // 默认爆头伤害是 1x
             damage *= headShotMultiplier;
         }
+
+        // Custom knockback for LivingEntity
         // 对 LivingEntity 进行击退强度的自定义
         if (parts.core() instanceof LivingEntity livingCore) {
+            // Cancel original knockback, set custom strength
             // 取消击退效果，设定自己的击退强度
             KnockBackModifier modifier = KnockBackModifier.fromLivingEntity(livingCore);
             modifier.setKnockBackStrength(this.knockback);
+            // Apply damage
             // 创建伤害
             tacAttackEntity(parts, damage, sources);
+            // Restore original knockback
             // 恢复原位
             modifier.resetKnockBackStrength();
         } else {
+            // Apply damage
             // 创建伤害
             tacAttackEntity(parts, damage, sources);
         }
+
+        // Explosion logic
         // 爆炸逻辑
         if (this.explosion) {
+            // Cancel invulnerable time
             // 取消无敌时间
             parts.core().invulnerableTime = 0;
             ExplodeUtil.createExplosion(this.getOwner(), this, this.explosionDamage, this.explosionRadius, this.explosionKnockback, this.explosionDestroyBlock, result.getLocation());
         }
+
+        // Kill event and synchronization for LivingEntity
         // 只对 LivingEntity 执行击杀判定
         if (parts.core() instanceof LivingEntity livingCore) {
+            // Event sync: server to client
             // 事件同步，从服务端到客户端
             if (!level().isClientSide) {
                 int attackerId = attacker == null ? 0 : attacker.getId();
+                // If the entity died
                 // 如果生物死了
                 if (livingCore.isDeadOrDying()) {
                     MinecraftForge.EVENT_BUS.post(new EntityKillByGunEvent(this, livingCore, attacker, newGunId, gunDisplayId, damage, sources, headshot, headShotMultiplier, LogicalSide.SERVER));
@@ -443,6 +481,7 @@ public class EntityKineticBullet extends Projectile implements IEntityAdditional
                 }
             }
         }
+        return true;
     }
 
     protected void onHitBlock(BlockHitResult result, Vec3 startVec, Vec3 endVec) {
