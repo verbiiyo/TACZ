@@ -53,8 +53,14 @@ minecraft {
         client {
             // 使用 JetBrainsRuntime 时需要的参数，否则无法热重载
             // 如果你使用别的 JDK，那么可以删除这一行
-            jvmArgs "-XX:+AllowEnhancedClassRedefinition"
-            // 每个启动单独区分文件夹
+            // ✅ 仅在使用 JetBrainsRuntime 时添加参数；这样 VSCode、Eclipse 等用户不会出错
+            // ✅ Only add this flag when using JetBrainsRuntime to support hot-reload;
+            //    other environments like VSCode or Eclipse will skip it safely
+            def javaVendor = System.getProperty("java.vendor") ?: ""
+            if (javaVendor.toLowerCase().contains("jetbrains")) {
+                jvmArgs "-XX:+AllowEnhancedClassRedefinition"
+            }
+
             workingDirectory project.file('run/client_a')
             property 'forge.logging.markers', 'SCAN,REGISTRIES,REGISTRYDUMP'
             property 'forge.logging.console.level', 'debug'
