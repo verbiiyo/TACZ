@@ -287,21 +287,15 @@ public class EntityKineticBullet extends Projectile implements IEntityAdditional
             }
 
             List<EntityResult> hitEntities = null;
-            // 子弹的击中检测，穿透为 1 或者爆炸类弹药限制为一个实体穿透判定
-            if (this.pierce <= 1 || this.explosion) {
-                EntityResult entityResult = EntityUtil.findEntityOnPath(this, startVec, endVec);
-                // 将单个命中是实体创建为单个内容的 list
-                if (entityResult != null) {
-                    hitEntities = Collections.singletonList(entityResult);
-                }
-            } else {
-                hitEntities = EntityUtil.findEntitiesOnPath(this, startVec, endVec);
-            }
+            // Always find all entities on the path, regardless of pierce count
+            // Pierce limiting happens during processing, not during detection
+            hitEntities = EntityUtil.findEntitiesOnPath(this, startVec, endVec);
             // 当子弹击中实体时，进行被命中的实体读取
             if (hitEntities != null && !hitEntities.isEmpty()) {
                 EntityResult[] hitEntityResult = hitEntities.toArray(new EntityResult[0]);
                 // 对被命中的实体进行排序，按照距离子弹发射位置的距离进行升序排序
-                for (int i = 0; (i < this.pierce || i < 1) && i < (hitEntityResult.length - 1); i++) {
+                // Sort ALL entities by distance, not limited by pierce count
+                for (int i = 0; i < hitEntityResult.length - 1; i++) {
                     int k = i;
                     for (int j = i + 1; j < hitEntityResult.length; j++) {
                         if (hitEntityResult[j].hitVec.distanceTo(startVec) < hitEntityResult[k].hitVec.distanceTo(startVec)) {
@@ -312,17 +306,32 @@ public class EntityKineticBullet extends Projectile implements IEntityAdditional
                     hitEntityResult[i] = hitEntityResult[k];
                     hitEntityResult[k] = t;
                 }
+                
+                // Process entities in order until pierce is exhausted
                 for (EntityResult entityResult : hitEntityResult) {
+                    // Stop processing if no pierce attempts left
+                    if (this.pierce < 1) {
+                        break;
+                    }
+                    
                     result = new TacHitResult(entityResult);
 
                     if (this.onHitEntity((TacHitResult) result, startVec, endVec)) {
+                        // Only decrement pierce if the hit was not canceled
                         this.pierce--;
                         if (this.pierce < 1 || this.explosion) {
                             // 子弹已经穿透所有实体，结束子弹的飞行
                             this.discard();
                             return;
                         }
+                    } else if (this.explosion) {
+                        // For explosive bullets, even canceled hits should stop the bullet
+                        // because explosions don't pierce regardless of cancellation
+                        this.discard();
+                        return;
                     }
+                    // If onHitEntity returns false (canceled), don't decrement pierce
+                    // and continue to next entity
                 }
             }
             this.onHitBlock(resultB, startVec, endVec);
